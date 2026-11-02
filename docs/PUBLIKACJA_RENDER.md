@@ -83,6 +83,15 @@ Supabase w **Environment** usługi i wykonaj ponowny deploy.
 Jeżeli połączenie interaktywne się zerwie, odśwież stronę i zaloguj się ponownie.
 Nie twórz dodatkowej bazy PostgreSQL w Render — aplikacja używa Supabase.
 
+Jeżeli `/healthz` działa, ale strona jest całkowicie pusta, sprawdź adres
+`https://TWOJA-APLIKACJA.onrender.com/_framework/blazor.web.js`. Musi zwrócić
+JavaScript, a nie błąd 404. W .NET 10 przywracanie zależności przed skopiowaniem
+plików `.razor` może pominąć zasoby startowe Blazora. Poprawiony `Dockerfile`
+kopiuje źródła przed `dotnet restore`, a projekt ustawia
+`RequiresAspNetWebAssets=true`. Budowa kontenera sprawdza obecność skryptu.
+Po wysłaniu poprawki wybierz w Render **Manual Deploy → Clear build cache & deploy**.
+Sama odpowiedź 200 ze strony głównej nie potwierdza uruchomienia interfejsu.
+
 ## 5. Udostępnij innym
 
 Przekazujesz adres `https://...onrender.com`, nie pliki projektu.
