@@ -1,0 +1,30 @@
+/* Shared by the app preview, browser print and the downloaded standalone HTML. */
+.medication-plan-report, .medication-plan-report * { box-sizing: border-box; }
+.medication-plan-report { width: 100%; max-width: 100%; min-width: 0; margin-top: 14px; padding: 12px; color: #233c3d; background: white; border: 1px solid #dce6e3; border-radius: 6px; font: 11px/1.3 Arial, sans-serif; overflow: visible; }
+.medication-plan-report h1 { margin: 0 0 6px; font-size: 18px; line-height: 1.2; letter-spacing: 0; }
+.medication-plan-report p { margin: 2px 0; font-size: 11px; line-height: 1.3; overflow-wrap: anywhere; }
+.plan-report-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 3px 12px; }
+.medication-plan-report .plan-generated { margin: 3px 0 7px; font-size: 9px; color: #677c7a; }
+.medication-plan-report .plan-day { margin-top: 10px; }
+.medication-plan-report .plan-day-date { margin: 0 0 4px; font-size: 13px; line-height: 1.2; break-after: avoid; }
+.medication-plan-report table { table-layout: fixed; border-collapse: collapse; width: 100%; max-width: 100%; margin: 0; font-size: 11px; }
+.plan-col-time { width: 24%; }
+.plan-col-medication { width: 42%; }
+.plan-col-dose { width: 24%; }
+.plan-col-check { width: 10%; }
+.medication-plan-report th, .medication-plan-report td { min-width: 0; border: 1px solid #aebeb5; padding: 4px 6px; text-align: left; vertical-align: middle; font-size: 11px; line-height: 1.25; white-space: normal; overflow-wrap: anywhere; word-break: normal; }
+.medication-plan-report th { background: #edf3ef; font-weight: 600; }
+.medication-plan-report .plan-check-column { width: auto; padding: 3px; text-align: center; }
+.medication-plan-report .plan-check-box { display: inline-block; box-sizing: border-box; width: 5mm; height: 5mm; max-width: 100%; border: 1px solid #333; background: white; vertical-align: middle; }
+.medication-plan-report tr { break-inside: avoid; }
+.medication-plan-report thead { display: table-header-group; }
+@media print {
+  @page { size: A4; margin: 12mm; }
+  body:has(.medication-plan-report) { margin: 0; padding: 0; width: auto; max-width: 100%; }
+  .medication-plan-report { margin: 0; padding: 0; border: 0; border-radius: 0; width: 100%; max-width: 100%; overflow: visible; }
+  .medication-plan-report h1 { font-size: 17px; }
+  .medication-plan-report th, .medication-plan-report td { padding: 3px 5px; font-size: 10px; }
+  .medication-plan-report .plan-check-column { padding: 2px; }
+  .medication-plan-report .plan-day { margin-top: 8px; }
+  .medication-plan-report .plan-day-date { font-size: 12px; }
+}

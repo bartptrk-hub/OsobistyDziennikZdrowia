@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: zdrowie-domowe
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: ASPNETCORE_HTTP_PORTS
+        value: "8080"
+      - key: PORT
+        value: "8080"
+      # Render terminates TLS and redirects public HTTP to HTTPS at its edge.
+      - key: Hosting__HttpsAtEdge
+        value: "true"
+      - key: Supabase__Url
+        sync: false
+      - key: Supabase__PublishableKey
+        sync: false

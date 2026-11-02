@@ -1,0 +1,76 @@
+<div class="history-legend" aria-label="Legenda kalendarza"><span><i class="legend-visit">◆</i> Wizyta</span><span><i class="legend-symptom"></i> Objaw</span><span><i class="legend-medication"></i> Lek</span><span><b class="transition-arrow">↳</b> Powiązanie objawów</span></div>
+<div class="calendar-scroll panel" role="region" aria-label="Kalendarz historii medycznej, przewijany w poziomie" tabindex="0">
+    <table class="history-calendar">
+        <caption class="sr-only">Historia od @From.ToString("dd.MM.yyyy") do @To.ToString("dd.MM.yyyy"). Kliknij zaznaczony wpis, aby zobaczyć szczegóły.</caption>
+        <thead><tr><th scope="col" class="calendar-name">Zdarzenie</th>@foreach (var day in days) { <th scope="col" class="@(day == MedicalRules.Today ? "calendar-today" : "")" title="@day.ToString("dd.MM.yyyy")">@day.ToString("dd.MM")</th> }</tr></thead>
+        <tbody>
+            <tr><th scope="row" class="calendar-name">Wizyty lekarskie</th>@foreach (var day in days)
+                {
+                    <td><div class="calendar-visits">@foreach (var visit in Visits.Where(v => v.Date == day).OrderBy(v => v.Doctor).ThenBy(v => v.Id))
+                        {
+                            <button type="button" class="calendar-visit" title="@VisitLabel(visit)" aria-label="@VisitLabel(visit)" @onclick="() => OnSelect.InvokeAsync(visit)">◆</button>
+                        }</div></td>
+                }</tr>
+            @foreach (var row in symptomRows)
+            {
+                var symptom = row.Symptom;
+                <tr class="@(row.Depth > 0 ? "linked-symptom-row" : "")" data-symptom-id="@symptom.Id"><th scope="row" class="calendar-name"><span class="symptom-row-label" style="--relation-depth:@Math.Min(row.Depth, 4)">@if (symptom.OriginId is not null) { <span class="transition-arrow" aria-hidden="true">↳</span> }@symptom.Name</span></th>@foreach (var day in days)
+                    {
+                        <td><div class="calendar-cell-stack">@if (HistoryRules.SymptomVisibleOn(symptom, day, MedicalRules.Today))
+                            {
+                                var label = SymptomLabel(symptom, day);
+                                <button type="button" class="calendar-bar symptom-shade-@(row.Depth % 3)" title="@label" aria-label="@label" @onclick="() => OnSelect.InvokeAsync(symptom)">@if (symptom.OriginId is not null && day == symptom.StartDate) { <span class="transition-arrow" aria-hidden="true">↳</span> }<span class="sr-only">@symptom.Name</span></button>
+                            }</div></td>
+                    }</tr>
+            }
+            @if (Medications.Count > 0)
+            {
+                <tr class="calendar-section"><th scope="row" class="calendar-name">Leki i suplementy</th><td colspan="@days.Count"></td></tr>
+                @foreach (var med in MedicationRules.Ordered(Medications))
+                {
+                    <tr class="med-color-@med.Color" data-medication-id="@med.Id" @ondragover:preventDefault @ondrop="() => Drop(med.Id)"><th scope="row" class="calendar-name"><div class="calendar-med-label"><span class="drag-handle" draggable="@(Busy ? "false" : "true")" title="Przeciągnij lek" @ondragstart="() => draggedId = med.Id" @ondragend="() => draggedId = null">⋮⋮</span><span class="calendar-med-name">@med.Name</span><span class="calendar-order-buttons"><button type="button" disabled="@Busy" aria-label="@($"Przesuń {med.Name} wyżej")" @onclick="() => OnShift.InvokeAsync((med.Id, -1))">↑</button><button type="button" disabled="@Busy" aria-label="@($"Przesuń {med.Name} niżej")" @onclick="() => OnShift.InvokeAsync((med.Id, 1))">↓</button></span></div></th>@foreach (var day in days)
+                        {
+                            <td><div class="calendar-cell-stack">@if (MedicalRules.Active(med.StartDate, med.EndDate, day))
+                                {
+                                    var label = $"{med.Name} · {med.Dose} {med.Unit} · {day:dd.MM.yyyy}. Pokaż szczegóły";
+                                    <button type="button" class="calendar-bar medication-bar colored-medication-bar" title="@label" aria-label="@label" @onclick="() => OnSelect.InvokeAsync(med)"><span class="sr-only">@med.Name</span></button>
+                                }</div></td>
+                        }</tr>
+                }
+            }
+        </tbody>
+    </table>
+</div>
+<p class="muted calendar-hint">Przewiń kalendarz w poziomie. Kliknij odcinek, aby zobaczyć szczegóły. Kolejność leków zmienisz uchwytem ⋮⋮ lub strzałkami ↑ ↓; zapisuje się dla pacjenta.</p>
+
+@code {
+    [Parameter] public DateOnly From { get; set; }
+    [Parameter] public DateOnly To { get; set; }
+    [Parameter] public IReadOnlyList<Visit> Visits { get; set; } = [];
+    [Parameter] public IReadOnlyList<Symptom> Symptoms { get; set; } = [];
+    [Parameter] public IReadOnlyList<Symptom> AllSymptoms { get; set; } = [];
+    [Parameter] public IReadOnlyList<Medication> Medications { get; set; } = [];
+    [Parameter] public EventCallback<Entity> OnSelect { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<MedicationMove> OnReorder { get; set; }
+    [Parameter] public EventCallback<(Guid Id, int Direction)> OnShift { get; set; }
+    private Guid? draggedId;
+    private async Task Drop(Guid target)
+    {
+        var source = draggedId; draggedId = null;
+        if (!Busy && source is Guid id && id != target) await OnReorder.InvokeAsync(new(id, target));
+    }
+    private IReadOnlyList<DateOnly> days = [];
+    private IReadOnlyList<HistoryRules.SymptomRow> symptomRows = [];
+    protected override void OnParametersSet()
+    {
+        days = HistoryRules.Days(From, To);
+        symptomRows = HistoryRules.OrderSymptoms(Symptoms.Where(s => HistoryRules.Overlaps(s.StartDate, HistoryRules.SymptomEnd(s, MedicalRules.Today), From, To)));
+    }
+    private static string VisitLabel(Visit v) => $"Wizyta · {v.Date:dd.MM.yyyy} · {v.Doctor} · {v.Clinic}. Pokaż szczegóły";
+    private string SymptomLabel(Symptom s, DateOnly day)
+    {
+        var origin = AllSymptoms.FirstOrDefault(o => o.Id == s.OriginId);
+        return $"{s.Name} · {day:dd.MM.yyyy} · {s.Description}{(origin is null ? "" : $" · Powiązanie: {origin.Name} → {s.Name}")}. Pokaż szczegóły";
+    }
+}

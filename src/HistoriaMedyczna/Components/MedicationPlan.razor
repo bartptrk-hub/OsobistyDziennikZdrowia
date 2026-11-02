@@ -1,0 +1,60 @@
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div class="modal-backdrop plan-backdrop"><section class="modal panel plan-modal" role="dialog" aria-modal="true" aria-labelledby="plan-title">
+    <div class="entry-heading plan-controls"><h2 id="plan-title">Lista leków do przekazania</h2><button type="button" class="text-button" @onclick="() => OnClose.InvokeAsync()">Zamknij ×</button></div>
+    <div class="plan-controls">
+        <div class="form-grid"><label>Od<InputDate @bind-Value="from" @bind-Value:after="Invalidate" /></label><label>Do<InputDate @bind-Value="to" @bind-Value:after="Invalidate" /></label></div>
+        <p class="muted">Wybierz pory lub godziny, które mają znaleźć się na liście, np. tylko podania w przedszkolu.</p>
+        <div class="time-options">@foreach (var slot in availableSlots) { <label class="check"><input type="checkbox" checked="@selectedSlots.Contains(slot)" @onchange="() => ToggleSlot(slot)" />@slot</label> }</div>
+        <div class="form-actions"><button type="button" class="primary" @onclick="Generate">Wygeneruj listę</button>@if (rows is { Count: > 0 }) { <button type="button" class="secondary" @onclick="Print">Drukuj / zapisz PDF</button><button type="button" class="secondary" @onclick="Download">Pobierz listę HTML</button> }</div>
+        @if (error.Length > 0) { <p class="alert error" role="alert">@error</p> }
+        @if (rows is { Count: 0 }) { <p class="muted" role="status">Brak leków w wybranych dniach i porach.</p> }
+    </div>
+    @if (rows is { Count: > 0 })
+    {
+        <MedicationPlanReport PatientName="@PatientName" From="from" To="to" Rows="rows" />
+    }
+</section></div>
+
+@code {
+    [Parameter] public string PatientName { get; set; } = "";
+    [Parameter] public IReadOnlyList<Medication> Medications { get; set; } = [];
+    [Parameter] public EventCallback OnClose { get; set; }
+    private DateOnly from = MedicalRules.Today, to = MedicalRules.Today.AddDays(6);
+    private string[] availableSlots = [];
+    private HashSet<string> selectedSlots = [];
+    private IReadOnlyList<MedicationPlanRules.Row>? rows;
+    private string error = "";
+    private IJSObjectReference? module;
+    protected override void OnInitialized()
+    {
+        availableSlots = MedicationRules.Slots(Medications).ToArray();
+        selectedSlots = availableSlots.ToHashSet();
+    }
+    private void Invalidate() { rows = null; error = ""; }
+    private void ToggleSlot(string slot) { if (!selectedSlots.Remove(slot)) selectedSlots.Add(slot); Invalidate(); }
+    private void Generate()
+    {
+        error = ""; rows = null;
+        if (selectedSlots.Count == 0) { error = "Wybierz przynajmniej jedną porę lub godzinę."; return; }
+        try { rows = MedicationPlanRules.Build(Medications, from, to, selectedSlots); }
+        catch (ArgumentException ex) { error = ex.Message; }
+    }
+    private async Task Export(string action)
+    {
+        if (rows is not { Count: > 0 }) return;
+        try
+        {
+            module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./medication-plan.js");
+            await module.InvokeVoidAsync(action);
+        }
+        catch (JSException) { error = "Nie udało się otworzyć wydruku lub pobrać pliku. Spróbuj ponownie."; }
+    }
+    private Task Print() => Export("printPlan");
+    private Task Download() => Export("downloadPlan");
+    public async ValueTask DisposeAsync()
+    {
+        if (module is not null) { try { await module.DisposeAsync(); } catch (JSDisconnectedException) { } }
+    }
+}

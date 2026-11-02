@@ -1,0 +1,183 @@
+@inject SupabaseService Database
+
+<div class="shell @(dark ? "dark" : "")">
+    <aside class="sidebar">
+        <div class="brand-row"><a href="/" class="brand"><span class="brand-mark">✚</span><span>Zdrowie domowe<small>Twoja historia leczenia</small></span></a><div class="mobile-controls"><button type="button" class="secondary" aria-expanded="@mobileMenuOpen" aria-controls="main-navigation" @onclick="() => mobileMenuOpen = !mobileMenuOpen">☰ Menu</button></div></div>
+        <nav id="main-navigation" class="@(mobileMenuOpen ? "mobile-menu-open" : "")" aria-label="Główna nawigacja">
+            @foreach (var item in Tabs.Where(t => t.Key != "admin"))
+            {
+                <button class="nav-item @(tab == item.Key ? "selected" : "")" disabled="@busy" @onclick="() => ChangeTab(item.Key)"><span>@item.Icon</span>@item.Label</button>
+            }
+            <button class="nav-item mobile-admin @(tab == "admin" ? "selected" : "")" disabled="@busy" @onclick='() => ChangeTab("admin")'><span>⚙</span>Słowniki danych</button>
+            <button type="button" class="nav-item mobile-theme" @onclick="() => dark = !dark">@(dark ? "☀ Jasny wygląd" : "☾ Ciemny wygląd")</button>
+        </nav>
+        <div class="sidebar-bottom"><p>Wizyty, objawy i leczenie<br />w jednym miejscu.</p><button class="nav-item desktop-admin @(tab == "admin" ? "selected" : "")" disabled="@busy" @onclick='() => ChangeTab("admin")'><span>⚙</span>Słowniki danych</button><button class="secondary" @onclick="() => dark = !dark">@(dark ? "☀ Jasny wygląd" : "☾ Ciemny wygląd")</button></div>
+    </aside>
+    <main>
+        <header class="topbar"><span>Osobisty dziennik zdrowia</span>@if (Database.IsSignedIn) { <button class="text-button" disabled="@busy" @onclick="Logout">Wyloguj</button> }</header>
+        <div class="content">
+            @if (!string.IsNullOrEmpty(error)) { <div class="alert error" role="alert">@error <button class="text-button" @onclick='() => error = ""'>Zamknij</button></div> }
+            @if (!string.IsNullOrEmpty(message)) { <div class="alert" role="status">@message</div> }
+            @if (!Database.IsConfigured)
+            {
+                <section class="welcome panel"><span class="eyebrow">ZACZNIJ TUTAJ</span><h1>Twoja nowa historia zdrowia</h1><p>Aplikacja jest gotowa do skonfigurowania połączenia z Supabase.</p><ol><li>W nowym projekcie Supabase wykonaj kolejno migracje 001, 002, 003 i 004 z katalogu <code>supabase/migrations</code>. W działającej bazie wykonaj wyłącznie brakujące migracje, zachowując kolejność.</li><li>Skopiuj <code>appsettings.Local.example.json</code> do <code>appsettings.Local.json</code> i uzupełnij adres projektu oraz klucz publishable.</li><li>Utwórz konto w Supabase Authentication i uruchom aplikację ponownie.</li></ol><p>Szczegółowa instrukcja znajduje się w pliku README.md.</p></section>
+            }
+            else if (!Database.IsSignedIn)
+            {
+                <section class="welcome panel login"><span class="eyebrow">DOBRZE CIĘ WIDZIEĆ</span><h1>Zadbaj o porządek<br />w historii zdrowia.</h1><p>Zaloguj się do swojego dziennika.</p>
+                    <EditForm Model="login" OnValidSubmit="Login" FormName="login"><DataAnnotationsValidator /><ValidationSummary />
+                        <label>E-mail<InputText type="email" autocomplete="username" @bind-Value="login.Email" /></label>
+                        <label>Hasło<InputText type="password" autocomplete="current-password" @bind-Value="login.Password" /></label>
+                        <button class="primary" disabled="@busy">@(busy ? "Logowanie…" : "Zaloguj się →")</button>
+                    </EditForm><p class="muted">Konto zakłada administrator w Supabase Authentication. Po odświeżeniu strony zaloguj się ponownie.</p>
+                </section>
+            }
+            else
+            {
+                <div class="patient-bar"><label>Profil pacjenta<select value="@patientId" @onchange="SelectPatient" disabled="@busy"><option value="">Wybierz profil</option>@foreach (var p in patients) { <option value="@p.Id">@(p.IsDefault ? "★ " : "")@p.Name</option> }</select></label><button class="secondary" disabled="@busy" @onclick="NewPatient">+ Nowy pacjent</button><button class="text-button" disabled="@busy" @onclick="Refresh">↻ Odśwież</button>@if (CurrentPatient is Patient selectedProfile) { <div class="patient-default-control">@if (selectedProfile.IsDefault) { <span class="default-patient-badge">★ Profil główny</span> } else { <button type="button" class="text-button" disabled="@busy" @onclick="SetMainPatient">☆ Ustaw jako główny</button> }</div> }</div>
+                <div class="page-heading"><div><span class="eyebrow">@CurrentPatient?.Name</span><h1>@Tabs.First(t => t.Key == tab).Label</h1><p>@Subtitle</p></div>
+                    @if (patientId is not null && tab is "visits" or "symptoms" or "medications") { <button class="primary" disabled="@busy" @onclick="NewEntry">+ @AddLabel</button> }
+                    @if (patientId is not null && tab is "daily" or "medications") { <button type="button" class="secondary" disabled="@busy" @onclick="() => showMedicationPlan = true">▤ Lista leków do wydruku</button> }
+                </div>
+                @if (busy) { <p role="status" class="muted">Trwa zapisywanie lub pobieranie danych…</p> }
+                @if (tab == "admin")
+                {
+                    <div class="dictionary-categories" role="group" aria-label="Kategorie słowników">@foreach (var category in DictionaryEntry.Categories) { <button type="button" class="@(dictionaryKind == category.Key ? "primary" : "secondary")" disabled="@busy" @onclick="() => { dictionaryKind = category.Key; search = string.Empty; }">@category.Label <span>(@dictionaries.Count(d => d.Kind == category.Key))</span></button> }</div>
+                    <div class="toolbar"><label class="search-label">Szukaj w słowniku<input @bind="search" @bind:event="oninput" placeholder="Wpisz fragment nazwy…" /></label><button type="button" class="primary" disabled="@busy" @onclick="NewDictionaryEntry">+ Dodaj pozycję</button></div>
+                    <p class="muted">Zmiana nazwy lub usunięcie pozycji zmienia podpowiedzi w formularzach. Wcześniej zapisane wizyty, objawy i dawkowanie pozostają bez zmian. W formularzach nazw można też wpisywać własne wartości.</p>
+                    <div class="panel dictionary-list">@foreach (var entry in dictionaries.Where(d => d.Kind == dictionaryKind && Matches(d.Value)).OrderBy(d => d.Value, StringComparer.CurrentCultureIgnoreCase)) { <div class="dictionary-row"><strong>@entry.Value</strong><div class="actions"><button type="button" disabled="@busy" @onclick="() => Edit(entry)">Edytuj</button><button type="button" class="danger-text" disabled="@busy" @onclick="() => AskDelete(entry)">Usuń</button></div></div> }
+                        @if (!dictionaries.Any(d => d.Kind == dictionaryKind && Matches(d.Value))) { <p class="empty">Brak pozycji do wyświetlenia. Dodaj pierwszą nazwę lub zmień wyszukiwanie.</p> }
+                    </div>
+                }
+                else if (patientId is null)
+                {
+                    <div class="empty panel"><span>✚</span><h2>Zacznij od profilu pacjenta</h2><p>Dodaj siebie lub członka rodziny, aby zapisywać historię leczenia.</p></div>
+                }
+                else if (tab == "daily")
+                {
+                    <div class="stats"><div class="panel"><small>Dawki w wybranym dniu</small><strong>@PlannedDoses</strong></div><div class="panel"><small>Odnotowane podania</small><strong>@GivenDoses</strong></div><div class="panel"><small>Trwające objawy</small><strong>@symptoms.Count(s => MedicalRules.Active(s.StartDate, s.EndDate, MedicalRules.Today))</strong></div></div>
+                    <div class="toolbar"><h2>Plan podawania leków</h2><label>Dzień<InputDate @bind-Value="selectedDate" disabled="@busy" /></label></div>
+                    @if (!ActiveMeds.Any()) { <div class="empty panel"><h2>Brak leków na ten dzień</h2><p>Dodaj lek i jego pory podawania w zakładce „Leki i suplementy”.</p></div> }
+                    @foreach (var time in MedicationRules.Slots(ActiveMeds))
+                    {
+                        var scheduled = ActiveMeds.Where(m => m.TimesOfDay.Contains(time)).ToList();
+                        @if (scheduled.Count > 0)
+                        {
+                            <section class="panel dose-group"><h3>◷ @time</h3>@foreach (var med in scheduled)
+                                {
+                                    var given = FindDose(med.Id, time);
+                                    <div class="dose-row med-color-@med.Color colored-dose"><div class="dose-details"><strong>@med.Name</strong><p>@med.Dose @med.Unit</p>@if (med.VisitId is Guid visitId && visits.FirstOrDefault(v => v.Id == visitId) is Visit visit) { <small class="muted">Z wizyty: @visit.Doctor · @Date(visit.Date)</small> }</div><button class="@(given is null ? "secondary" : "given")" disabled="@(busy || selectedDate > MedicalRules.Today)" aria-pressed="@(given is not null)" @onclick="() => ToggleDose(med, time)">@(given is null ? "○ Oznacz podanie" : "✓ Podano · cofnij")</button></div>
+                                }</section>
+                        }
+                    }
+                    @if (selectedDate > MedicalRules.Today) { <p class="muted">Podanie dawki można odnotować w dniu podania lub później.</p> }
+                }
+                else if (tab == "history")
+                {
+                    <label class="range-preset">Okres<select value="@historyPreset" @onchange="ApplyHistoryPreset">@foreach (var option in HistoryRanges.Options) { <option value="@option.Key">@option.Label</option> }</select></label>
+                    <div class="toolbar filters"><label>Od<InputDate @bind-Value="historyFrom" @bind-Value:after='() => historyPreset = "custom"' /></label><label>Do<InputDate @bind-Value="historyTo" @bind-Value:after='() => historyPreset = "custom"' /></label><label>Szukaj<input @bind="search" @bind:event="oninput" placeholder="Nazwa, lekarz, obszar…" /></label></div>
+                    <div class="toolbar history-controls"><label>Obszar objawów<select @bind="historyArea"><option value="">Wszystkie obszary</option>@foreach (var area in symptoms.Select(s => s.Area).Where(a => a.Length > 0).Concat(DictionaryValues("area")).Distinct().OrderBy(a => a)) { <option>@area</option> }</select></label><div class="view-switch" role="group" aria-label="Widok historii"><button type="button" class="@(historyCalendar ? "primary" : "secondary")" aria-pressed="@historyCalendar" @onclick="() => historyCalendar = true">▦ Kalendarz</button><button type="button" class="@(!historyCalendar ? "primary" : "secondary")" aria-pressed="@(!historyCalendar)" @onclick="() => historyCalendar = false">☷ Lista</button></div></div>
+                    @if (historyTo < historyFrom) { <p role="alert">Data „do” musi być późniejsza lub równa dacie „od”.</p> }
+                    else
+                    {
+                        var events = HistoryEvents.ToList();
+                        @if (events.Count == 0) { <div class="empty panel"><h2>Brak zdarzeń w tym okresie</h2><p>Zmień zakres dat lub dodaj pierwszy wpis.</p></div> }
+                        @if (historyCalendar)
+                        {
+                            @if (historyTo.DayNumber - historyFrom.DayNumber + 1 > HistoryRules.MaxDays) { <p role="alert" class="alert">Kalendarz pokazuje maksymalnie @HistoryRules.MaxDays dni naraz. Zawęź zakres dat lub przełącz na listę.</p> }
+                            else { <HistoryCalendar From="historyFrom" To="historyTo" Visits="HistoryVisits.ToList()" Symptoms="HistorySymptoms.ToList()" AllSymptoms="symptoms" Medications="HistoryMedications.ToList()" Busy="busy" OnReorder="move => MoveMedication(move.Source, move.Target)" OnShift="move => ShiftMedication(move.Id, move.Direction)" OnSelect="item => preview = item" /> }
+                        }
+                        else { <div class="timeline">@foreach (var item in events) { <article class="panel history-item"><span class="badge">@item.Kind</span><small>@item.Period</small><h2>@item.Title</h2><p class="preserve">@item.Detail</p><button type="button" class="text-button" @onclick="() => preview = item.Entry">Pokaż szczegóły →</button></article> }</div> }
+                    }
+                }
+                else
+                {
+                    <div class="toolbar"><label class="search-label">Szukaj<input @bind="search" @bind:event="oninput" placeholder="Wpisz nazwę lub fragment opisu…" /></label>@if (tab == "symptoms") { <label class="check"><input type="checkbox" @bind="showFinished" /> Pokaż zakończone</label> }</div>
+                    @if (tab == "visits")
+                    {
+                        @foreach (var visit in visits.Where(v => Matches(v.Doctor, v.Clinic, v.Diagnosis, v.Recommendations)).OrderByDescending(v => v.Date))
+                        {
+                            <article class="panel entry"><div class="entry-heading"><span class="badge">Wizyta · @Date(visit.Date)</span><div class="actions"><button disabled="@busy" @onclick="() => Edit(visit)">Edytuj</button><button class="danger-text" disabled="@busy" @onclick="() => AskDelete(visit)">Usuń</button></div></div><h2>@visit.Doctor</h2><p class="muted">@visit.Clinic</p>@if (visit.Diagnosis.Length > 0) { <p><strong>Rozpoznanie:</strong> @visit.Diagnosis</p> }<p class="preserve">@visit.Recommendations</p>@foreach (var med in medications.Where(m => m.VisitId == visit.Id)) { <span class="chip">@med.Name · @med.Dose @med.Unit</span> }</article>
+                        }
+                        @if (!visits.Any(v => Matches(v.Doctor, v.Clinic, v.Diagnosis, v.Recommendations))) { <p class="empty panel">Brak wizyt do wyświetlenia.</p> }
+                    }
+                    else if (tab == "symptoms")
+                    {
+                        @foreach (var symptom in FilteredSymptoms)
+                        {
+                            <article class="panel entry"><div class="entry-heading"><span class="badge @(symptom.EndDate is null ? "warm" : "")">@HistoryRules.Status(symptom, symptoms)</span><div class="actions"><button disabled="@busy" @onclick="() => BeginTransition(symptom)">↳ Przeszło w…</button><button disabled="@busy" @onclick="() => Edit(symptom)">Edytuj / zakończ</button><button class="danger-text" disabled="@busy" @onclick="() => AskDelete(symptom)">Usuń</button></div></div><h2>@symptom.Name</h2><p class="muted">@symptom.Area · @Period(symptom.StartDate, symptom.EndDate)</p><p class="preserve">@symptom.Description</p>@if (symptoms.FirstOrDefault(o => o.Id == symptom.OriginId) is Symptom origin) { <div class="relation-note"><span class="transition-arrow">↳</span> Powstał z: <button type="button" class="text-button" @onclick="() => preview = origin">@origin.Name · @Date(origin.StartDate)</button></div> }@foreach (var child in HistoryRules.Children(symptom, symptoms)) { <div class="relation-note">↳ Przeszło w: <button type="button" class="text-button" @onclick="() => preview = child">@child.Name · @Date(child.StartDate)</button></div> }</article>
+                        }
+                        @if (!FilteredSymptoms.Any()) { <p class="empty panel">Brak objawów spełniających wybrane filtry.</p> }
+                    }
+                    else if (tab == "medications")
+                    {
+                        <p class="muted order-hint">Kolor grupy widać na prawym obramowaniu. Kolejność możesz zmienić uchwytem ⋮⋮ lub strzałkami.</p>
+                        @foreach (var med in MedicationRules.Ordered(medications.Where(m => Matches(m.Name))))
+                        {
+                            <article class="panel entry medication-entry med-color-@med.Color" @ondragover:preventDefault @ondrop="() => DropMedication(med.Id)"><div class="entry-heading"><span class="badge">@(MedicalRules.Active(med.StartDate, med.EndDate, MedicalRules.Today) ? "W trakcie terapii" : "Poza okresem terapii")</span><div class="actions"><span class="drag-handle" draggable="@(busy ? "false" : "true")" title="Przeciągnij lek" @ondragstart="() => draggedMedication = med.Id" @ondragend="() => draggedMedication = null">⋮⋮</span><button type="button" disabled="@busy" aria-label="Przesuń wyżej" @onclick="() => ShiftMedication(med.Id, -1)">↑</button><button type="button" disabled="@busy" aria-label="Przesuń niżej" @onclick="() => ShiftMedication(med.Id, 1)">↓</button><button disabled="@busy" @onclick="() => Edit(med)">Edytuj</button><button class="danger-text" disabled="@busy" @onclick="() => AskDelete(med)">Usuń</button></div></div><h2>@med.Name <small>@med.Dose @med.Unit</small></h2><p class="muted">@Period(med.StartDate, med.EndDate) · Kolor: @MedicationRules.Colors.First(c => c.Key == med.Color).Label</p>@foreach (var time in med.TimesOfDay) { <span class="chip">@time</span> }@if (visits.FirstOrDefault(v => v.Id == med.VisitId) is Visit linked) { <p class="muted">Wizyta: @Date(linked.Date) · @linked.Doctor</p> }</article>
+                        }
+                        @if (!medications.Any(m => Matches(m.Name))) { <p class="empty panel">Brak leków do wyświetlenia.</p> }
+                    }
+                }
+            }
+        </div>
+    </main>
+    @if (showMedicationPlan && CurrentPatient is Patient planPatient)
+    {
+        <MedicationPlan PatientName="@planPatient.Name" Medications="medications" OnClose="() => showMedicationPlan = false" />
+    }
+    @if (preview is not null)
+    {
+        <HistoryPreview Selected="preview" Symptoms="symptoms" Visits="visits" Medications="medications" OnClose="() => preview = null" OnSelect="item => preview = item" OnEdit="EditPreview" OnTransition="BeginTransition" />
+    }
+    @if (editor is not null)
+    {
+        <div class="modal-backdrop"><section role="dialog" aria-modal="true" aria-labelledby="editor-title" class="modal panel"><div class="entry-heading"><h2 id="editor-title">@EditorTitle</h2><button class="text-button" disabled="@busy" @onclick="CloseEditor">Zamknij ×</button></div>
+            @if (error.Length > 0) { <div class="alert error" role="alert">@error</div> }
+            <EditForm Model="editor" OnValidSubmit="SaveEditor" FormName="editor" @key="editor"><DataAnnotationsValidator /><ValidationSummary /><fieldset disabled="@busy">
+                @if (editor is DictionaryEntry dictionary)
+                {
+                    <label>Nazwa<InputText @bind-Value="dictionary.Value" maxlength="@(dictionary.Kind == "unit" ? 50 : 200)" /></label><p class="muted">Po zapisaniu pozycja będzie dostępna w podpowiedziach formularzy dla wszystkich Twoich pacjentów.</p>
+                }
+                else if (editor is Patient p)
+                {
+                    <label>Imię lub nazwa profilu<InputText @bind-Value="p.Name" maxlength="120" /></label>
+                }
+                else if (editor is Visit v)
+                {
+                    <label>Data wizyty<InputDate @bind-Value="v.Date" /></label><label>Lekarz<InputText @bind-Value="v.Doctor" list="doctors" /></label><label>Placówka<InputText @bind-Value="v.Clinic" list="clinics" /></label><label>Rozpoznanie<InputText @bind-Value="v.Diagnosis" list="diagnoses" /></label><label>Zalecenia<InputTextArea @bind-Value="v.Recommendations" rows="4" /></label>
+                }
+                else if (editor is Symptom s)
+                {
+                    @if (symptoms.FirstOrDefault(o => o.Id == s.OriginId) is Symptom origin)
+                    {
+                        <div class="relation-note"><span class="transition-arrow">↳</span> Powiązanie z: <strong>@origin.Name</strong> · od @Date(origin.StartDate)</div>
+                        @if (transitionSourceId is not null) { <label class="check transition-choice"><InputCheckbox @bind-Value="closeTransitionSource" /> Zakończ dotychczasowy</label><p class="muted">Zaznacz, aby zakończyć poprzedni objaw w dniu rozpoczęcia nowego. Bez zaznaczenia jego data zakończenia pozostanie bez zmian. Możesz zachować nazwę i opisać zmianę charakteru objawu.</p> }
+                    }
+                    <label>Nazwa objawu<InputText @bind-Value="s.Name" list="symptom-names" /></label><label>Obszar<InputText @bind-Value="s.Area" list="areas" /></label><div class="form-grid"><label>Początek<InputDate @bind-Value="s.StartDate" /></label><label>Zakończenie (opcjonalnie)<InputDate @bind-Value="s.EndDate" /></label></div><label>Opis i obserwacje<InputTextArea @bind-Value="s.Description" rows="4" /></label>
+                }
+                else if (editor is Medication m)
+                {
+                    <label>Nazwa leku<InputText @bind-Value="m.Name" list="medication-names" /></label><div class="form-grid"><label>Dawka<InputNumber @bind-Value="m.Dose" step="0.001" /></label><label>Jednostka<InputSelect @bind-Value="m.Unit"><option value="">Wybierz jednostkę</option>@foreach (var unit in UnitsFor(m)) { <option>@unit</option> }</InputSelect></label></div><div class="form-grid"><label>Początek<InputDate @bind-Value="m.StartDate" /></label><label>Zakończenie (opcjonalnie)<InputDate @bind-Value="m.EndDate" /></label></div>
+                    <span class="field-label">Kolor grupy</span><div class="color-options" role="group" aria-label="Kolor leku">@foreach (var color in MedicationRules.Colors) { <button type="button" class="color-option med-color-@color.Key" aria-pressed="@(m.Color == color.Key)" @onclick="() => m.Color = color.Key">@(m.Color == color.Key ? "✓ " : "")@color.Label</button> }</div>
+                    <label>Sposób planowania<select value="@m.ScheduleMode" @onchange="args => ChangeSchedule(m, args)"><option value="period">Pory dnia</option><option value="clock">Konkretne godziny</option></select></label>
+                    @if (m.ScheduleMode == "period") { <div class="time-options">@foreach (var time in MedicalRules.Times) { <label class="check"><input type="checkbox" checked="@m.TimesOfDay.Contains(time)" @onchange="() => ToggleTime(m, time)" />@time</label> }</div> }
+                    else { <div class="clock-input"><label>Godzina<input type="time" step="60" value="@clockTimeInput" @onchange='args => clockTimeInput = args.Value?.ToString() ?? ""' /></label><button type="button" class="secondary" @onclick="() => AddClockTime(m)">+ Dodaj godzinę</button></div><div class="time-options">@foreach (var clock in m.TimesOfDay) { <button type="button" class="secondary" aria-label="@($"Usuń godzinę {clock}")" @onclick="() => ToggleTime(m, clock)">@clock ×</button> }</div><p class="muted">Godziny są planem podawania w lokalnym czasie. Zmiana sposobu planowania czyści wybrane pory.</p> }
+                    <label>Powiązana wizyta<InputSelect @bind-Value="m.VisitId"><option value="">Bez powiązania</option>@foreach (var visit in visits.OrderByDescending(v => v.Date)) { <option value="@visit.Id">@Date(visit.Date) · @visit.Doctor</option> }</InputSelect></label>
+                    <p class="muted">Jednostki dodasz w „Słownikach danych”. Zapisz dawkowanie zgodne z zaleceniem lekarza. Zmiana harmonogramu dotyczy całego okresu tego wpisu. Dla nowego dawkowania zakończ poprzedni wpis i dodaj nowy lek.</p>
+                }
+                <div class="form-actions"><button type="button" class="secondary" @onclick="CloseEditor">Anuluj</button><button class="primary" type="submit">@(busy ? "Zapisywanie…" : "Zapisz")</button></div>
+            </fieldset></EditForm>
+        </section></div>
+    }
+    @if (pendingDelete is not null)
+    {
+        <div class="modal-backdrop"><section role="dialog" aria-modal="true" aria-labelledby="delete-title" class="modal panel"><h2 id="delete-title">Usunąć wpis?</h2>@if (error.Length > 0) { <div class="alert error" role="alert">@error</div> }<p>Wpis zostanie trwale usunięty z bazy. Tej operacji nie można cofnąć.</p>@if (pendingDelete is DictionaryEntry d) { <p><strong>@d.Value</strong> zniknie z podpowiedzi. Dane historyczne pozostaną bez zmian.</p> }<div class="form-actions"><button class="secondary" disabled="@busy" @onclick="() => pendingDelete = null">Anuluj</button><button class="danger" disabled="@busy" @onclick="ConfirmDelete">Usuń wpis</button></div></section></div>
+    }
+    <datalist id="doctors">@foreach (var value in DictionaryValues("doctor")) { <option value="@value" /> }</datalist>
+    <datalist id="clinics">@foreach (var value in DictionaryValues("clinic")) { <option value="@value" /> }</datalist>
+    <datalist id="diagnoses">@foreach (var value in visits.Select(v => v.Diagnosis).Distinct()) { <option value="@value" /> }</datalist>
+    <datalist id="symptom-names">@foreach (var value in DictionaryValues("symptom")) { <option value="@value" /> }</datalist>
+    <datalist id="areas">@foreach (var value in DictionaryValues("area")) { <option value="@value" /> }</datalist>
+    <datalist id="medication-names">@foreach (var value in DictionaryValues("medication")) { <option value="@value" /> }</datalist>
+</div>

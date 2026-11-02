@@ -1,0 +1,1098 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Menu, X, Calendar as CalendarIcon, Activity, Stethoscope, 
+  Pill, Plus, CheckCircle, ArrowRight, Clock, Moon, Sun,
+  LayoutGrid, CornerDownRight, Trash2, Edit
+} from 'lucide-react';
+
+// --- FIREBASE IMPORTS ---
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+
+// --- FIREBASE SETUP ---
+const firebaseConfig = {
+  apiKey: "AIzaSyDdR_vEzGcQv3yyHaGKwlft3qNTCjhyuY8",
+  authDomain: "domowe-f03a6.firebaseapp.com",
+  projectId: "domowe-f03a6",
+  storageBucket: "domowe-f03a6.firebasestorage.app",
+  messagingSenderId: "169991755604",
+  appId: "1:169991755604:web:fc191517f0a03469d85ac1",
+  measurementId: "G-X3D5TCHV0X"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- INITIAL MOCK DATA & DICTIONARIES (Fallbacks) ---
+const INITIAL_AREAS = ['Układ oddechowy', 'Układ pokarmowy', 'Skóra', 'Głowa/Szyja', 'Układ kostno-stawowy', 'Ogólne'];
+const INITIAL_SYMPTOMS = ['Katar', 'Kaszel', 'Gorączka', 'Ból gardła', 'Ból ucha', 'Wymioty', 'Biegunka', 'Wysypka', 'Ból brzucha'];
+const INITIAL_CLINICS = ['CMP Pawia', 'CMP Puławska', 'Tolek', 'Centrum Zdrowia Dziecka'];
+const INITIAL_DIAGNOSES = [
+  'Przeziębienie', 
+  'Ostre zapalenie gardła', 
+  'Ostre zapalenie migdałków (angina)', 
+  'Ostre zapalenie oskrzeli', 
+  'Zapalenie ucha środkowego', 
+  'Biegunka/Wymioty (jelitówka)'
+];
+const INITIAL_UNITS = ['tabletka', 'ml', 'mg', 'g', 'pompek', 'psiknięć', 'psiknięć w dziurkę'];
+const TIMES_OF_DAY = ['rano (na czczo)', 'rano', 'przed obiadem', 'w trakcie obiadu', 'po obiedzie', 'do kolacji', 'przed snem'];
+
+// --- CUSTOM AUTOCOMPLETE COMPONENT ---
+const Autocomplete = ({ label, options, value, onChange, placeholder }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [filtered, setFiltered] = useState([]);
+  const wrapperRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleInputChange = (e) => {
+    const val = e.target.value;
+    onChange(val);
+    const newFiltered = options.filter(o => o.toLowerCase().includes(val.toLowerCase()) && o !== val);
+    setFiltered(newFiltered);
+    setIsOpen(true);
+  };
+
+  const handleOptionClick = (opt) => {
+    onChange(opt);
+    setIsOpen(false);
+  };
+
+  return (
+    <div className="mb-3 relative" ref={wrapperRef}>
+      <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">{label}</label>
+      <input 
+        type="text" 
+        value={value} 
+        onChange={handleInputChange}
+        onFocus={() => {
+          setFiltered(options.filter(o => o !== value));
+          setIsOpen(true);
+        }}
+        placeholder={placeholder}
+        className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
+      />
+      {isOpen && filtered.length > 0 && (
+        <ul className="absolute z-50 w-full mt-1 max-h-40 overflow-y-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg shadow-xl">
+          {filtered.map((opt, idx) => (
+            <li 
+              key={idx} 
+              onClick={() => handleOptionClick(opt)}
+              className="px-3 py-2 text-sm text-gray-800 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-blue-900/50 cursor-pointer border-b border-gray-100 dark:border-gray-700 last:border-0"
+            >
+              {opt}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [isDbReady, setIsDbReady] = useState(false);
+  const [activeTab, setActiveTab] = useState('daily');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(false);
+
+  // Dictionaries
+  const [symptomsDict, setSymptomsDict] = useState(INITIAL_SYMPTOMS);
+  const [areasDict, setAreasDict] = useState(INITIAL_AREAS);
+  const [clinicsDict, setClinicsDict] = useState(INITIAL_CLINICS);
+  const [doctorsDict, setDoctorsDict] = useState(['Jan Kowalski', 'Anna Nowak']);
+  const [diagnosesDict, setDiagnosesDict] = useState(INITIAL_DIAGNOSES);
+  const [medsDict, setMedsDict] = useState(['Ibum', 'Apap', 'Nasivin', 'Neosine']);
+
+  // Data
+  const [symptoms, setSymptoms] = useState([]);
+  const [visits, setVisits] = useState([]);
+  const [medications, setMedications] = useState([]);
+  const [dailyLog, setDailyLog] = useState({});
+
+  // --- FIREBASE AUTH & SYNC ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error('Błąd logowania Firebase:', error);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    
+    // Używamy publicznej kolekcji przypisanej do tego appId, żeby żona mogła widzieć te same dane
+    const baseCol = collection(db, 'artifacts', appId, 'public', 'data');
+    const unsubs = [];
+
+    // Nasłuchiwanie objawów
+    unsubs.push(onSnapshot(collection(baseCol, 'symptoms'), snap => {
+      setSymptoms(snap.docs.map(d => d.data()).sort((a,b) => new Date(b.startDate) - new Date(a.startDate)));
+    }, console.error));
+
+    // Nasłuchiwanie wizyt
+    unsubs.push(onSnapshot(collection(baseCol, 'visits'), snap => {
+      setVisits(snap.docs.map(d => d.data()).sort((a,b) => new Date(b.date) - new Date(a.date)));
+    }, console.error));
+
+    // Nasłuchiwanie leków
+    unsubs.push(onSnapshot(collection(baseCol, 'medications'), snap => {
+      setMedications(snap.docs.map(d => d.data()).sort((a,b) => new Date(b.startDate) - new Date(a.startDate)));
+    }, console.error));
+
+    // Nasłuchiwanie kalendarza
+    unsubs.push(onSnapshot(doc(baseCol, 'logs', 'daily'), snap => {
+      if (snap.exists()) setDailyLog(snap.data());
+    }, console.error));
+
+    // Nasłuchiwanie wspólnych słowników
+    unsubs.push(onSnapshot(doc(baseCol, 'config', 'dictionaries'), snap => {
+      if (snap.exists()) {
+        const d = snap.data();
+        if (d.areasDict) setAreasDict(d.areasDict);
+        if (d.symptomsDict) setSymptomsDict(d.symptomsDict);
+        if (d.clinicsDict) setClinicsDict(d.clinicsDict);
+        if (d.doctorsDict) setDoctorsDict(d.doctorsDict);
+        if (d.diagnosesDict) setDiagnosesDict(d.diagnosesDict);
+        if (d.medsDict) setMedsDict(d.medsDict);
+      }
+    }, console.error));
+
+    setIsDbReady(true);
+    return () => unsubs.forEach(u => u());
+  }, [user]);
+
+  // Helper dla szybkiego aktualizowania słowników w Firebase
+  const saveDictionaries = async (updates) => {
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'config', 'dictionaries'), updates, { merge: true });
+    } catch (e) { console.error("Error saving dictionaries", e); }
+  };
+
+  // --- VIEWS ---
+
+  const DailyView = () => {
+    const today = new Date().toISOString().split('T')[0];
+    const [selectedDate, setSelectedDate] = useState(today);
+
+    const activeMeds = medications.filter(med => {
+      const start = med.startDate;
+      const end = med.endDate || '9999-12-31';
+      return selectedDate >= start && selectedDate <= end;
+    });
+
+    const handleToggleMed = async (medId, time) => {
+      const logKey = `${medId}_${time}`;
+      const isCurrentlyGiven = dailyLog[selectedDate]?.[logKey] || false;
+      
+      const newDailyLog = {
+        ...dailyLog,
+        [selectedDate]: {
+          ...(dailyLog[selectedDate] || {}),
+          [logKey]: !isCurrentlyGiven
+        }
+      };
+      
+      // Optymistyczna aktualizacja UI
+      setDailyLog(newDailyLog);
+      
+      // Zapis do bazy
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'logs', 'daily'), newDailyLog);
+      } catch (e) { console.error(e); }
+    };
+
+    return (
+      <div className="p-3 animate-in fade-in zoom-in duration-200">
+        <h2 className="text-xl font-bold mb-3 flex items-center text-gray-800 dark:text-gray-100">
+          <CalendarIcon className="mr-2" size={20} /> Kalendarz Podawania
+        </h2>
+        
+        <input 
+          type="date" 
+          value={selectedDate} 
+          onChange={(e) => setSelectedDate(e.target.value)}
+          className="w-full p-2 mb-4 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white font-medium shadow-sm"
+        />
+
+        {activeMeds.length === 0 ? (
+          <div className="text-center text-sm text-gray-500 dark:text-gray-400 py-6 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
+            Brak leków do podania w tym dniu.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {TIMES_OF_DAY.map(time => {
+              const medsForTime = activeMeds.filter(m => m.timesOfDay.includes(time));
+              if (medsForTime.length === 0) return null;
+
+              return (
+                <div key={time} className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
+                  <div className="bg-blue-50 dark:bg-blue-900/30 px-3 py-1.5 border-b border-gray-100 dark:border-gray-700 font-semibold text-xs text-blue-800 dark:text-blue-200 flex items-center uppercase tracking-wider">
+                    <Clock size={14} className="mr-1.5" /> {time}
+                  </div>
+                  <div className="divide-y divide-gray-50 dark:divide-gray-700/50">
+                    {medsForTime.map(med => {
+                      const logKey = `${med.id}_${time}`;
+                      const isGiven = dailyLog[selectedDate]?.[logKey] || false;
+                      const linkedVisit = med.visitId ? visits.find(v => v.id === med.visitId) : null;
+                      return (
+                        <div key={med.id} className="p-2.5 flex items-center justify-between">
+                          <div className="flex-1 pr-2">
+                            <p className="font-bold text-gray-800 dark:text-gray-100 text-sm">{med.name}</p>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">{med.dose} {med.unit}</p>
+                            {linkedVisit && (
+                              <p className="text-[10px] text-indigo-600 dark:text-indigo-400 mt-0.5 flex items-center">
+                                <Stethoscope size={10} className="mr-1" /> {linkedVisit.doctor} ({linkedVisit.date})
+                              </p>
+                            )}
+                          </div>
+                          <button 
+                            onClick={() => handleToggleMed(med.id, time)}
+                            className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+                              isGiven 
+                              ? 'bg-green-500 text-white shadow-inner' 
+                              : 'bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500 border border-gray-200 dark:border-gray-600'
+                            }`}
+                          >
+                            <CheckCircle size={20} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const SymptomsView = () => {
+    const [showForm, setShowForm] = useState(false);
+    const [showFinished, setShowFinished] = useState(false);
+    const [transitioningFrom, setTransitioningFrom] = useState(null);
+    const [editingId, setEditingId] = useState(null);
+    const [endingSymptomId, setEndingSymptomId] = useState(null);
+    const [endDateInput, setEndDateInput] = useState(new Date().toISOString().split('T')[0]);
+    const [formData, setFormData] = useState({ 
+      area: '', name: '', description: '', startDate: new Date().toISOString().split('T')[0], status: 'Trwa' 
+    });
+
+    const handleSave = async () => {
+      if (!formData.name || !formData.startDate) return;
+      
+      // Update dictionaries
+      let dictUpdates = {};
+      const tArea = formData.area.trim();
+      const tName = formData.name.trim();
+      if (tArea && !areasDict.includes(tArea)) dictUpdates.areasDict = [...areasDict, tArea];
+      if (tName && !symptomsDict.includes(tName)) dictUpdates.symptomsDict = [...symptomsDict, tName];
+      if (Object.keys(dictUpdates).length > 0) saveDictionaries(dictUpdates);
+
+      try {
+        if (editingId) {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'symptoms', editingId.toString()), { ...symptoms.find(s => s.id === editingId), ...formData }, { merge: true });
+        } else {
+          const newId = Date.now().toString();
+          const newSymptom = { ...formData, id: newId };
+  
+          if (transitioningFrom) {
+            newSymptom.originId = transitioningFrom.id;
+            if (transitioningFrom.name.toLowerCase() === formData.name.toLowerCase()) {
+              await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'symptoms', transitioningFrom.id.toString()), { status: 'Przeszło w...', endDate: formData.startDate, transitionedToId: newId }, { merge: true });
+            } else {
+              await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'symptoms', transitioningFrom.id.toString()), { transitionedToId: newId }, { merge: true });
+            }
+          }
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'symptoms', newId), newSymptom);
+        }
+      } catch (e) { console.error("Error saving symptom", e); }
+      
+      setShowForm(false);
+      setEditingId(null);
+      setTransitioningFrom(null);
+      setFormData({ area: '', name: '', description: '', startDate: new Date().toISOString().split('T')[0], status: 'Trwa' });
+    };
+
+    const handleEdit = (sym) => {
+      setEditingId(sym.id);
+      setTransitioningFrom(null);
+      setFormData({
+         area: sym.area, name: sym.name, description: sym.description || '', 
+         startDate: sym.startDate, status: sym.status, endDate: sym.endDate || ''
+      });
+      setShowForm(true);
+    };
+
+    const handleDelete = async (id) => {
+      try {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'symptoms', id.toString()));
+      } catch (e) { console.error("Error deleting symptom", e); }
+    };
+
+    const handleTransition = (sym) => {
+      setTransitioningFrom(sym);
+      setEditingId(null);
+      setFormData({ 
+        area: sym.area, name: sym.name, description: '', 
+        startDate: new Date().toISOString().split('T')[0], status: 'Trwa' 
+      });
+      setShowForm(true);
+    };
+
+    const confirmEndSymptom = async (id) => {
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'symptoms', id.toString()), { status: 'Zakończone', endDate: endDateInput }, { merge: true });
+      } catch (e) { console.error("Error ending symptom", e); }
+      setEndingSymptomId(null);
+    };
+
+    return (
+      <div className="p-3">
+        <div className="flex justify-between items-center mb-2">
+          <h2 className="text-xl font-bold flex items-center text-gray-800 dark:text-gray-100"><Activity className="mr-2" size={20}/> Objawy</h2>
+          <button onClick={() => {setShowForm(true); setEditingId(null); setTransitioningFrom(null);}} className="bg-blue-600 text-white p-2 rounded-full shadow-md">
+            <Plus size={18} />
+          </button>
+        </div>
+
+        <div className="mb-4 flex items-center pl-1">
+          <input 
+            type="checkbox" 
+            id="showFinished" 
+            checked={showFinished} 
+            onChange={(e) => setShowFinished(e.target.checked)} 
+            className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600 cursor-pointer"
+          />
+          <label htmlFor="showFinished" className="ml-2 text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer">
+            Pokazuj zakończone
+          </label>
+        </div>
+
+        {showForm && (
+          <div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-md mb-4 border border-gray-100 dark:border-gray-700 animate-in slide-in-from-top-2">
+            <h3 className="font-bold text-sm mb-3 text-gray-800 dark:text-gray-100">
+              {editingId ? 'Edytuj objaw' : (transitioningFrom ? `Przejście z: ${transitioningFrom.name}` : 'Nowy objaw')}
+            </h3>
+            <Autocomplete label="Obszar" options={areasDict} value={formData.area} onChange={v => setFormData({...formData, area: v})} placeholder="np. Układ oddechowy" />
+            <Autocomplete label="Objaw" options={symptomsDict} value={formData.name} onChange={v => setFormData({...formData, name: v})} placeholder="np. Katar" />
+            
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Data rozp.</label>
+              <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+            </div>
+
+            {editingId && (
+              <div className="mb-3">
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Data zak. (opcj.)</label>
+                <input type="date" value={formData.endDate || ''} onChange={e => setFormData({...formData, endDate: e.target.value, status: e.target.value ? 'Zakończone' : 'Trwa'})} className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+              </div>
+            )}
+
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Opis (szczegóły)</label>
+              <textarea 
+                value={formData.description} 
+                onChange={e => setFormData({...formData, description: e.target.value})} 
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white h-16"
+                placeholder="np. gęsty, zielony, utrudnia sen..."
+              />
+            </div>
+            
+            <div className="flex justify-end space-x-2 mt-4">
+              <button onClick={() => setShowForm(false)} className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400">Anuluj</button>
+              <button onClick={handleSave} className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg shadow-sm">Zapisz</button>
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {symptoms.filter(sym => showFinished || (sym.status !== 'Zakończone' && sym.status !== 'Przeszło w...')).map(sym => (
+            <div key={sym.id} className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 relative overflow-hidden">
+              <div className={`absolute left-0 top-0 bottom-0 w-1 ${sym.status === 'Trwa' ? 'bg-red-500' : sym.status === 'Zakończone' ? 'bg-green-500' : 'bg-gray-400'}`}></div>
+              
+              <div className="absolute top-2 right-2 flex space-x-2">
+                 <button onClick={() => handleEdit(sym)} className="p-1.5 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 rounded-md active:bg-blue-100"><Edit size={14} /></button>
+                 <button onClick={() => handleDelete(sym.id)} className="p-1.5 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 rounded-md active:bg-red-100"><Trash2 size={14} /></button>
+              </div>
+
+              <div className="flex justify-between items-start pl-2 pr-16">
+                <div className="flex-1">
+                  <h4 className="font-bold text-base text-gray-800 dark:text-gray-100 leading-tight">{sym.name}</h4>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">{sym.area}</p>
+                  {sym.description && <p className="text-sm text-gray-700 dark:text-gray-300 italic mb-1 border-l-2 border-gray-200 dark:border-gray-600 pl-2">{sym.description}</p>}
+                  <p className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                    {sym.startDate} {sym.endDate ? ` - ${sym.endDate}` : ' (obecnie)'}
+                  </p>
+                </div>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full uppercase tracking-wide font-semibold ${sym.status === 'Trwa' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'}`}>
+                  {sym.status}
+                </span>
+              </div>
+              
+              <div className="mt-3 flex space-x-2 pl-2 flex-wrap gap-y-2">
+                {sym.status === 'Trwa' && (
+                  endingSymptomId === sym.id ? (
+                    <div className="flex flex-1 items-center space-x-2 min-w-[120px]">
+                      <input type="date" value={endDateInput} onChange={e => setEndDateInput(e.target.value)} className="w-full p-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+                      <button onClick={() => confirmEndSymptom(sym.id)} className="bg-green-600 text-white px-2 py-1 rounded text-xs font-bold">OK</button>
+                      <button onClick={() => setEndingSymptomId(null)} className="bg-gray-200 text-gray-700 px-2 py-1 rounded text-xs">X</button>
+                    </div>
+                  ) : (
+                    <button onClick={() => {setEndingSymptomId(sym.id); setEndDateInput(new Date().toISOString().split('T')[0]);}} className="flex-1 min-w-[120px] bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 py-1.5 rounded-lg text-xs font-semibold border border-green-200 dark:border-green-800">
+                      Zakończ
+                    </button>
+                  )
+                )}
+                <button onClick={() => handleTransition(sym)} className="flex-1 min-w-[120px] bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 py-1.5 rounded-lg text-xs font-semibold flex justify-center items-center border border-blue-200 dark:border-blue-800">
+                  Przeszło w <ArrowRight size={12} className="ml-1" />
+                </button>
+              </div>
+            </div>
+          ))}
+          {symptoms.filter(sym => showFinished || (sym.status !== 'Zakończone' && sym.status !== 'Przeszło w...')).length === 0 && !showForm && (
+            <p className="text-center text-sm text-gray-500 dark:text-gray-400 py-8">Brak zapisanych objawów do wyświetlenia.</p>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const MedicalHistoryView = () => {
+    // Generate dates range (default last 7 days + next 3 days)
+    const [rangeStart, setRangeStart] = useState(() => {
+      const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().split('T')[0];
+    });
+    const [rangeEnd, setRangeEnd] = useState(() => {
+      const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().split('T')[0];
+    });
+    const [filterArea, setFilterArea] = useState('');
+    const [selectedItemInfo, setSelectedItemInfo] = useState(null);
+
+    const dates = [];
+    let curr = new Date(rangeStart);
+    const end = new Date(rangeEnd);
+    while(curr <= end) {
+      dates.push(curr.toISOString().split('T')[0]);
+      curr.setDate(curr.getDate() + 1);
+    }
+
+    // Group symptoms by name to display in the same row
+    const filteredSymptoms = symptoms.filter(s => filterArea === '' || s.area === filterArea);
+    const symptomNames = [...new Set(filteredSymptoms.map(s => s.name))];
+    
+    // Group medications
+    const medNames = [...new Set(medications.map(m => m.name))];
+
+    // Assign color shades for overlapping identical symptoms
+    const getShadeClass = (symInstance) => {
+      const shades = ['bg-blue-300 dark:bg-blue-800/60', 'bg-sky-300 dark:bg-sky-800/60', 'bg-indigo-300 dark:bg-indigo-800/60'];
+      return shades[symInstance.id % 3];
+    };
+
+    const getMedShadeClass = (medInstance) => {
+      const shades = ['bg-emerald-300 dark:bg-emerald-800/60', 'bg-green-300 dark:bg-green-800/60', 'bg-teal-300 dark:bg-teal-800/60'];
+      return shades[medInstance.id % 3];
+    };
+
+    return (
+      <div className="p-3">
+        <h2 className="text-xl font-bold flex items-center text-gray-800 dark:text-gray-100 mb-4"><LayoutGrid className="mr-2" size={20}/> Historia medyczna</h2>
+        
+        {selectedItemInfo && (
+          <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 animate-in fade-in" onClick={() => setSelectedItemInfo(null)}>
+            <div className="bg-white dark:bg-gray-800 rounded-xl p-5 w-full max-w-xs shadow-xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
+              <h3 className="font-bold text-lg text-blue-700 dark:text-blue-400 mb-3 border-b border-gray-100 dark:border-gray-700 pb-2">
+                {selectedItemInfo.type === 'visit' ? 'Szczegóły Wizyty' : selectedItemInfo.type === 'symptom' ? 'Szczegóły Objawu' : 'Szczegóły Leku'}
+              </h3>
+              {selectedItemInfo.type === 'visit' ? (
+                 <div className="text-sm space-y-2 text-gray-700 dark:text-gray-300">
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Data:</span> {selectedItemInfo.data.date}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Lekarz:</span> {selectedItemInfo.data.doctor}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Placówka:</span> {selectedItemInfo.data.clinic}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Diagnoza:</span> {selectedItemInfo.data.diagnosis || '-'}</p>
+                   {selectedItemInfo.data.recommendations && <p className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700"><span className="font-semibold text-gray-900 dark:text-gray-100 block mb-1">Zalecenia:</span> {selectedItemInfo.data.recommendations}</p>}
+                   
+                   {/* Przepisane leki z wizyty */}
+                   {(() => {
+                     const visitMeds = medications.filter(m => m.visitId === selectedItemInfo.data.id);
+                     if (visitMeds.length === 0) return null;
+                     return (
+                       <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">
+                         <span className="font-semibold text-gray-900 dark:text-gray-100 block mb-1">Przepisane leki:</span>
+                         <ul className="list-disc pl-4 space-y-1">
+                           {visitMeds.map(m => (
+                             <li key={m.id}>{m.name} ({m.dose} {m.unit})</li>
+                           ))}
+                         </ul>
+                       </div>
+                     );
+                   })()}
+                 </div>
+              ) : selectedItemInfo.type === 'symptom' ? (
+                 <div className="text-sm space-y-2 text-gray-700 dark:text-gray-300">
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Objaw:</span> {selectedItemInfo.data.name}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Obszar:</span> {selectedItemInfo.data.area}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Okres:</span> {selectedItemInfo.data.startDate} {selectedItemInfo.data.endDate ? ` - ${selectedItemInfo.data.endDate}` : ' (obecnie)'}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Status:</span> {selectedItemInfo.data.status}</p>
+                   {selectedItemInfo.data.description && <p className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700"><span className="font-semibold text-gray-900 dark:text-gray-100 block mb-1">Opis:</span> {selectedItemInfo.data.description}</p>}
+                 </div>
+              ) : (
+                 <div className="text-sm space-y-2 text-gray-700 dark:text-gray-300">
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Lek:</span> {selectedItemInfo.data.name}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Dawkowanie:</span> {selectedItemInfo.data.dose} {selectedItemInfo.data.unit}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Okres:</span> {selectedItemInfo.data.startDate} {selectedItemInfo.data.endDate ? ` - ${selectedItemInfo.data.endDate}` : ' (stale)'}</p>
+                   <p><span className="font-semibold text-gray-900 dark:text-gray-100">Pory dnia:</span> {selectedItemInfo.data.timesOfDay.join(', ')}</p>
+                 </div>
+              )}
+              <button onClick={() => setSelectedItemInfo(null)} className="mt-5 w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-medium transition-colors">Zamknij</button>
+            </div>
+          </div>
+        )}
+
+        <div className="mb-4 grid grid-cols-2 gap-2 bg-white dark:bg-gray-800 p-2 rounded-lg shadow-sm border border-gray-100 dark:border-gray-700">
+          <div>
+            <label className="block text-[10px] uppercase text-gray-500 mb-1">Od</label>
+            <input type="date" value={rangeStart} onChange={e => setRangeStart(e.target.value)} className="w-full text-xs p-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded" />
+          </div>
+          <div>
+            <label className="block text-[10px] uppercase text-gray-500 mb-1">Do</label>
+            <input type="date" value={rangeEnd} onChange={e => setRangeEnd(e.target.value)} className="w-full text-xs p-1 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded" />
+          </div>
+          <div className="col-span-2 mt-1">
+            <select value={filterArea} onChange={e => setFilterArea(e.target.value)} className="w-full text-xs p-1.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded text-gray-800 dark:text-gray-200">
+              <option value="">-- Wszystkie obszary --</option>
+              {areasDict.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse" style={{ minWidth: `${dates.length * 40 + 100}px` }}>
+              <thead>
+                <tr>
+                  <th className="p-2 border-b border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-xs font-medium text-gray-500 w-28 sticky left-0 z-10 shadow-[1px_0_0_0_#e5e7eb] dark:shadow-[1px_0_0_0_#374151]">Zdarzenie</th>
+                  {dates.map(d => {
+                    const [, month, day] = d.split('-');
+                    return <th key={d} className="p-1 border-b border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-[10px] font-medium text-gray-500 text-center min-w-[40px] w-10">{day}.{month}</th>
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {/* Row 1: Visits (Anchored) */}
+                <tr>
+                  <td className="p-2 border-b border-r border-gray-200 dark:border-gray-700 text-xs font-semibold text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-800 sticky left-0 z-10 shadow-[1px_0_0_0_#e5e7eb] dark:shadow-[1px_0_0_0_#374151]">
+                    Wizyty lekarskie
+                  </td>
+                  {dates.map(d => {
+                    const hasVisit = visits.find(v => v.date === d);
+                    return (
+                      <td key={d} className="p-0 border-b border-r border-gray-200 dark:border-gray-700 text-center bg-blue-50/30 dark:bg-blue-900/10 relative">
+                        {hasVisit && (
+                          <div 
+                            className="absolute inset-0 flex items-center justify-center cursor-pointer hover:bg-blue-200 dark:hover:bg-blue-800/50 transition-colors"
+                            onClick={() => setSelectedItemInfo({ type: 'visit', data: hasVisit })}
+                          >
+                            <div className="w-3 h-3 bg-blue-600 transform rotate-45 rounded-sm shadow-sm" title="Wizyta"></div>
+                          </div>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+
+                {/* Rows: Symptoms */}
+                {symptomNames.map(name => (
+                  <tr key={name}>
+                    <td className="p-2 border-b border-r border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 sticky left-0 z-10 shadow-[1px_0_0_0_#e5e7eb] dark:shadow-[1px_0_0_0_#374151] truncate max-w-[112px]" title={name}>
+                      {name}
+                    </td>
+                    {dates.map(d => {
+                      // Find if this date is covered by any instance of this symptom
+                      const instancesOnDate = filteredSymptoms.filter(s => 
+                        s.name === name && s.startDate <= d && (s.endDate ? s.endDate >= d : true)
+                      );
+                      
+                      const mainInstance = instancesOnDate[0];
+                      const isStart = mainInstance && mainInstance.startDate === d;
+                      const hasDifferentOrigin = isStart && mainInstance.originId && symptoms.find(s => s.id === mainInstance.originId)?.name !== name;
+
+                      return (
+                        <td 
+                          key={d} 
+                          className={`p-0 border-b border-r border-gray-100 dark:border-gray-700 relative ${mainInstance ? getShadeClass(mainInstance) + ' cursor-pointer hover:opacity-80' : ''}`}
+                          onClick={() => mainInstance && setSelectedItemInfo({ type: 'symptom', data: mainInstance })}
+                        >
+                          {mainInstance && isStart && hasDifferentOrigin && (
+                            <CornerDownRight size={14} className="absolute -top-1 -left-1 text-red-600 bg-white/50 rounded-full dark:text-red-400 dark:bg-gray-800/50" />
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+                {symptomNames.length === 0 && (
+                  <tr>
+                    <td colSpan={dates.length + 1} className="p-4 text-center text-xs text-gray-500">Brak objawów w wybranym przedziale.</td>
+                  </tr>
+                )}
+
+                {/* Spacer row for visually separating symptoms and medications */}
+                {medNames.length > 0 && (
+                   <tr>
+                     <td colSpan={dates.length + 1} className="p-1.5 border-b border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 text-[10px] font-bold text-gray-500 uppercase tracking-wider sticky left-0 z-10 shadow-[1px_0_0_0_#e5e7eb] dark:shadow-[1px_0_0_0_#374151]">
+                       Leki i suplementy
+                     </td>
+                   </tr>
+                )}
+
+                {/* Rows: Medications */}
+                {medNames.map(name => (
+                  <tr key={`med-${name}`}>
+                    <td className="p-2 border-b border-r border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 sticky left-0 z-10 shadow-[1px_0_0_0_#e5e7eb] dark:shadow-[1px_0_0_0_#374151] truncate max-w-[112px]" title={name}>
+                      {name}
+                    </td>
+                    {dates.map(d => {
+                      const instancesOnDate = medications.filter(m => 
+                        m.name === name && m.startDate <= d && (m.endDate ? m.endDate >= d : true)
+                      );
+                      
+                      const mainInstance = instancesOnDate[0];
+
+                      return (
+                        <td 
+                          key={`med-${name}-${d}`} 
+                          className={`p-0 border-b border-r border-gray-100 dark:border-gray-700 relative ${mainInstance ? getMedShadeClass(mainInstance) + ' cursor-pointer hover:opacity-80' : ''}`}
+                          onClick={() => mainInstance && setSelectedItemInfo({ type: 'med', data: mainInstance })}
+                        >
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p className="text-[10px] text-gray-400 mt-2 italic">* Użyj suwaka pod wykresem, aby przesuwać w lewo/prawo.</p>
+      </div>
+    );
+  };
+
+  const VisitsView = () => {
+    const [showForm, setShowForm] = useState(false);
+    const [editingId, setEditingId] = useState(null);
+    const [formData, setFormData] = useState({ date: new Date().toISOString().split('T')[0], clinic: '', doctor: '', diagnosis: '', recommendations: '' });
+
+    const generateId = (doctorName, dateStr) => {
+      const initials = (doctorName || 'NN').split(' ').map(n => n[0]).join('').toUpperCase() || 'XX';
+      const datePart = dateStr.replace(/-/g, '').substring(0,8);
+      return `${initials}_${datePart.substring(0,4)}_${datePart.substring(4)}`;
+    };
+
+    const handleSave = async () => {
+      if (!formData.doctor || !formData.date) return;
+      
+      let dictUpdates = {};
+      const tClinic = formData.clinic.trim();
+      const tDoctor = formData.doctor.trim();
+      const tDiag = formData.diagnosis.trim();
+      if (tClinic && !clinicsDict.includes(tClinic)) dictUpdates.clinicsDict = [...clinicsDict, tClinic];
+      if (tDoctor && !doctorsDict.includes(tDoctor)) dictUpdates.doctorsDict = [...doctorsDict, tDoctor];
+      if (tDiag && !diagnosesDict.includes(tDiag)) dictUpdates.diagnosesDict = [...diagnosesDict, tDiag];
+      if (Object.keys(dictUpdates).length > 0) saveDictionaries(dictUpdates);
+
+      const generatedId = generateId(formData.doctor, formData.date);
+
+      try {
+        if (editingId) {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'visits', editingId.toString()), { ...formData, id: generatedId, uid: editingId }, { merge: true });
+        } else {
+          const newUid = Date.now().toString();
+          const newVisit = { ...formData, id: generatedId, uid: newUid };
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'visits', newUid), newVisit);
+        }
+      } catch (e) { console.error("Error saving visit", e); }
+      
+      setShowForm(false);
+      setEditingId(null);
+      setFormData({ date: new Date().toISOString().split('T')[0], clinic: '', doctor: '', diagnosis: '', recommendations: '' });
+    };
+
+    const handleEdit = (visit) => {
+      setEditingId(visit.uid);
+      setFormData({
+        date: visit.date, clinic: visit.clinic, doctor: visit.doctor,
+        diagnosis: visit.diagnosis || '', recommendations: visit.recommendations || ''
+      });
+      setShowForm(true);
+    };
+
+    const handleDelete = async (uid) => {
+      try {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'visits', uid.toString()));
+      } catch (e) { console.error("Error deleting visit", e); }
+    };
+
+    return (
+      <div className="p-3">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-bold flex items-center text-gray-800 dark:text-gray-100"><Stethoscope className="mr-2" size={20} /> Wizyty</h2>
+          <button onClick={() => {setShowForm(true); setEditingId(null);}} className="bg-blue-600 text-white p-2 rounded-full shadow-md">
+            <Plus size={18}/>
+          </button>
+        </div>
+
+        {showForm && (
+          <div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-md mb-4 border border-gray-100 dark:border-gray-700 animate-in slide-in-from-top-2">
+            <h3 className="font-bold text-sm mb-3 text-gray-800 dark:text-gray-100">{editingId ? 'Edytuj wizytę' : 'Nowa wizyta'}</h3>
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Data</label>
+              <input type="date" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+            </div>
+            <Autocomplete label="Placówka" options={clinicsDict} value={formData.clinic} onChange={v => setFormData({...formData, clinic: v})} placeholder="np. CMP Pawia" />
+            <Autocomplete label="Lekarz" options={doctorsDict} value={formData.doctor} onChange={v => setFormData({...formData, doctor: v})} placeholder="np. Jan Kowalski" />
+            <Autocomplete label="Diagnoza" options={diagnosesDict} value={formData.diagnosis} onChange={v => setFormData({...formData, diagnosis: v})} placeholder="np. Przeziębienie" />
+            
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Zalecenia</label>
+              <textarea 
+                value={formData.recommendations} 
+                onChange={e => setFormData({...formData, recommendations: e.target.value})} 
+                className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white h-20"
+                placeholder="Zalecenia lekarza..."
+              />
+            </div>
+            
+            <div className="flex justify-end space-x-2 mt-4">
+              <button onClick={() => setShowForm(false)} className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400">Anuluj</button>
+              <button onClick={handleSave} className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg shadow-sm">Zapisz</button>
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {visits.map(visit => {
+            const visitMeds = medications.filter(m => m.visitId === visit.id);
+            return (
+            <div key={visit.uid} className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 relative overflow-hidden">
+              <div className="absolute top-2 right-2 flex space-x-2">
+                 <button onClick={() => handleEdit(visit)} className="p-1.5 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 rounded-md active:bg-blue-100"><Edit size={14} /></button>
+                 <button onClick={() => handleDelete(visit.uid)} className="p-1.5 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 rounded-md active:bg-red-100"><Trash2 size={14} /></button>
+              </div>
+
+              <div className="flex justify-between items-start mb-1 pr-16">
+                <h4 className="font-bold text-base text-gray-800 dark:text-gray-100">{visit.date}</h4>
+                <span className="text-[10px] bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200 px-1.5 py-0.5 rounded font-mono">{visit.id}</span>
+              </div>
+              <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">{visit.doctor} <span className="text-xs text-gray-400 font-normal">({visit.clinic})</span></p>
+              {visit.diagnosis && <p className="text-xs text-red-600 dark:text-red-400 mt-1 font-medium">{visit.diagnosis}</p>}
+              {visit.recommendations && (
+                <div className="mt-2 p-2 bg-gray-50 dark:bg-gray-700/50 rounded text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                  {visit.recommendations}
+                </div>
+              )}
+              {visitMeds.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">
+                  <p className="text-[10px] font-semibold text-gray-500 uppercase mb-1">Przepisane leki:</p>
+                  <div className="space-y-1">
+                    {visitMeds.map(med => (
+                      <div key={med.id} className="text-xs flex items-center text-gray-700 dark:text-gray-300">
+                        <Pill size={10} className="mr-1.5 text-blue-500" />
+                        <span className="font-semibold mr-1">{med.name}</span>
+                        <span>- {med.dose} {med.unit}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )})}
+          {visits.length === 0 && !showForm && (
+            <p className="text-center text-sm text-gray-500 dark:text-gray-400 py-8">Brak zapisanych wizyt.</p>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const MedicationsView = () => {
+    const [showForm, setShowForm] = useState(false);
+    const [editingId, setEditingId] = useState(null);
+    const [formData, setFormData] = useState({ 
+      name: '', dose: '', unit: 'ml', startDate: new Date().toISOString().split('T')[0], 
+      endDate: '', timesOfDay: [], visitId: '' 
+    });
+
+    const toggleTime = (time) => {
+      setFormData(prev => ({
+        ...prev,
+        timesOfDay: prev.timesOfDay.includes(time) 
+          ? prev.timesOfDay.filter(t => t !== time)
+          : [...prev.timesOfDay, time]
+      }));
+    };
+
+    const handleSave = async () => {
+      if (!formData.name || formData.timesOfDay.length === 0) return;
+      
+      let dictUpdates = {};
+      const tName = formData.name.trim();
+      if (tName && !medsDict.includes(tName)) dictUpdates.medsDict = [...medsDict, tName];
+      if (Object.keys(dictUpdates).length > 0) saveDictionaries(dictUpdates);
+
+      try {
+        if (editingId) {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'medications', editingId.toString()), formData, { merge: true });
+        } else {
+          const newId = Date.now().toString();
+          const newMed = { ...formData, id: newId };
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'medications', newId), newMed);
+        }
+      } catch (e) { console.error("Error saving medication", e); }
+
+      setShowForm(false);
+      setEditingId(null);
+      setFormData({ name: '', dose: '', unit: 'ml', startDate: new Date().toISOString().split('T')[0], endDate: '', timesOfDay: [], visitId: '' });
+    };
+
+    const handleEdit = (med) => {
+      setEditingId(med.id);
+      setFormData({
+        name: med.name, dose: med.dose, unit: med.unit, startDate: med.startDate,
+        endDate: med.endDate || '', timesOfDay: med.timesOfDay, visitId: med.visitId || ''
+      });
+      setShowForm(true);
+    };
+
+    const handleDelete = async (id) => {
+      try {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'medications', id.toString()));
+      } catch (e) { console.error("Error deleting medication", e); }
+    };
+
+    return (
+      <div className="p-3">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-bold flex items-center text-gray-800 dark:text-gray-100"><Pill className="mr-2" size={20}/> Leki</h2>
+          <button onClick={() => {setShowForm(true); setEditingId(null);}} className="bg-blue-600 text-white p-2 rounded-full shadow-md">
+            <Plus size={18}/>
+          </button>
+        </div>
+
+        {showForm && (
+          <div className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-md mb-4 border border-gray-100 dark:border-gray-700 animate-in slide-in-from-top-2">
+            <h3 className="font-bold text-sm mb-3 text-gray-800 dark:text-gray-100">{editingId ? 'Edytuj lek' : 'Nowy lek'}</h3>
+            <Autocomplete label="Nazwa leku" options={medsDict} value={formData.name} onChange={v => setFormData({...formData, name: v})} placeholder="np. Ibum" />
+            
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Dawka (ilość)</label>
+                <input type="number" step="0.1" value={formData.dose} onChange={e => setFormData({...formData, dose: e.target.value})} className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Jednostka</label>
+                <select value={formData.unit} onChange={e => setFormData({...formData, unit: e.target.value})} className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                  {INITIAL_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Od kiedy</label>
+                <input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Do kiedy (opcj.)</label>
+                <input type="date" value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white" />
+              </div>
+            </div>
+
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">Pory dnia</label>
+              <div className="flex flex-wrap gap-1.5">
+                {TIMES_OF_DAY.map(time => (
+                  <button
+                    key={time}
+                    type="button"
+                    onClick={() => toggleTime(time)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors border ${
+                      formData.timesOfDay.includes(time) 
+                        ? 'bg-blue-600 text-white border-blue-600' 
+                        : 'bg-gray-100 text-gray-600 border-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:border-gray-600'
+                    }`}
+                  >
+                    {time}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mb-3">
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">Z wizyty (opcjonalnie)</label>
+              <select value={formData.visitId} onChange={e => setFormData({...formData, visitId: e.target.value})} className="w-full p-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white">
+                <option value="">Brak</option>
+                {visits.map(v => <option key={v.id} value={v.id}>{v.date} - {v.doctor}</option>)}
+              </select>
+            </div>
+            
+            <div className="flex justify-end space-x-2 mt-4">
+              <button onClick={() => setShowForm(false)} className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400">Anuluj</button>
+              <button onClick={handleSave} className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg shadow-sm">Zapisz</button>
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {medications.map(med => {
+            const linkedVisit = med.visitId ? visits.find(v => v.id === med.visitId) : null;
+            return (
+            <div key={med.id} className="bg-white dark:bg-gray-800 p-3 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 relative overflow-hidden">
+              <div className="absolute top-2 right-2 flex space-x-2">
+                 <button onClick={() => handleEdit(med)} className="p-1.5 text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 rounded-md active:bg-blue-100"><Edit size={14} /></button>
+                 <button onClick={() => handleDelete(med.id)} className="p-1.5 text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 rounded-md active:bg-red-100"><Trash2 size={14} /></button>
+              </div>
+
+              <div className="flex justify-between pr-16">
+                <h4 className="font-bold text-base text-gray-800 dark:text-gray-100">{med.name}</h4>
+                <span className="font-semibold text-sm text-blue-600 dark:text-blue-400">{med.dose} {med.unit}</span>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                Okres: {med.startDate} {med.endDate ? `do ${med.endDate}` : '(stale)'}
+              </p>
+              {linkedVisit && (
+                <p className="text-[10px] text-indigo-600 dark:text-indigo-400 mt-0.5 flex items-center">
+                  <Stethoscope size={10} className="mr-1" /> z wizyty: {linkedVisit.date} ({linkedVisit.doctor})
+                </p>
+              )}
+              <div className="flex flex-wrap gap-1 mt-2">
+                {med.timesOfDay.map(t => (
+                  <span key={t} className="text-[10px] bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 px-1.5 py-0.5 rounded">{t}</span>
+                ))}
+              </div>
+            </div>
+          )})}
+          {medications.length === 0 && !showForm && (
+            <p className="text-center text-sm text-gray-500 dark:text-gray-400 py-8">Brak zapisanych leków.</p>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  if (!isDbReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="flex flex-col items-center">
+          <Activity className="animate-pulse text-blue-600 mb-4" size={40} />
+          <p className="text-gray-500 dark:text-gray-400 font-medium">Ładowanie danych medycznych...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const navItems = [
+    { id: 'daily', icon: CalendarIcon, label: 'Kalendarz na dziś' },
+    { id: 'history', icon: LayoutGrid, label: 'Historia medyczna' },
+    { id: 'symptoms', icon: Activity, label: 'Bieżące objawy' },
+    { id: 'visits', icon: Stethoscope, label: 'Wizyty i diagnozy' },
+    { id: 'meds', icon: Pill, label: 'Leki i suplementy' },
+  ];
+
+  const currentTab = navItems.find(item => item.id === activeTab);
+
+  return (
+    <div className={`min-h-screen ${isDarkMode ? 'dark bg-gray-900' : 'bg-gray-50'} text-gray-900 font-sans transition-colors duration-200`}>
+      <header className="bg-white dark:bg-gray-800 shadow-sm sticky top-0 z-20 transition-colors">
+        <div className="flex items-center justify-between px-3 py-3">
+          <div className="flex items-center">
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-1.5 -ml-1.5 mr-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg focus:outline-none"
+            >
+              <Menu size={22} />
+            </button>
+            <h1 className="text-lg font-bold text-gray-800 dark:text-white flex items-center">
+              {currentTab && <currentTab.icon size={18} className="mr-2 text-blue-600 dark:text-blue-400" />}
+              {currentTab ? currentTab.label : 'Zdrowie Dziecka'}
+            </h1>
+          </div>
+          <button 
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            className="p-1.5 text-gray-600 dark:text-gray-300 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
+            {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+        </div>
+      </header>
+
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-30 transition-opacity"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      <div className={`fixed inset-y-0 left-0 w-64 bg-white dark:bg-gray-800 shadow-2xl z-40 transform transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="flex justify-between items-center p-4 border-b border-gray-100 dark:border-gray-700">
+          <h2 className="text-lg font-bold text-blue-600 dark:text-blue-400">Zdrowie Domowe</h2>
+          <button onClick={() => setIsSidebarOpen(false)} className="p-1 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full">
+            <X size={18} />
+          </button>
+        </div>
+        <nav className="p-3 space-y-1">
+          {navItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => {
+                setActiveTab(item.id);
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg transition-colors text-sm ${
+                activeTab === item.id 
+                ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 font-medium' 
+                : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+              }`}
+            >
+              <item.icon size={18} />
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      <main className="max-w-md mx-auto w-full pb-16">
+        {activeTab === 'daily' && <DailyView />}
+        {activeTab === 'history' && <MedicalHistoryView />}
+        {activeTab === 'symptoms' && <SymptomsView />}
+        {activeTab === 'visits' && <VisitsView />}
+        {activeTab === 'meds' && <MedicationsView />}
+      </main>
+    </div>
+  );
+}

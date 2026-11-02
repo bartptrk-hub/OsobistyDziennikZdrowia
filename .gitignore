@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+*.user
+**/appsettings.Local.json
+.artifacts/
+.env
+.env.*
+*.pfx
+*.pem
+

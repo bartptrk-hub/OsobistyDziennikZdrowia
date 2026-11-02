@@ -1,0 +1,26 @@
+<section id="medication-plan-report" class="medication-plan-report">
+    <h1>Lista podawania leków</h1>
+    <div class="plan-report-meta"><p><strong>Pacjent: @PatientName</strong></p><p>Okres: @From.ToString("dd.MM.yyyy") – @To.ToString("dd.MM.yyyy")</p></div>
+    <p class="plan-generated">Wygenerowano: @MedicalRules.Today.ToString("dd.MM.yyyy"). Plan na podstawie zapisanych terapii.</p>
+    @foreach (var day in Rows.GroupBy(r => r.Date).OrderBy(g => g.Key))
+    {
+        <section class="plan-day">
+            <h2 class="plan-day-date">@day.Key.ToString("dd.MM.yyyy")</h2>
+            <table>
+                <colgroup><col class="plan-col-time" /><col class="plan-col-medication" /><col class="plan-col-dose" /><col class="plan-col-check" /></colgroup>
+                <thead><tr><th scope="col">Pora / godzina</th><th scope="col">Lek</th><th scope="col">Dawka jednorazowa</th><th scope="col" class="plan-check-column">Podano</th></tr></thead>
+                <tbody>@foreach (var row in day)
+                    {
+                        <tr><td>@row.Slot</td><td>@row.Medication</td><td>@row.Dose @row.Unit</td><td class="plan-check-column"><span class="plan-check-box" role="img" aria-label="Pole do odhaczenia podania"></span></td></tr>
+                    }</tbody>
+            </table>
+        </section>
+    }
+</section>
+
+@code {
+    [Parameter] public string PatientName { get; set; } = "";
+    [Parameter] public DateOnly From { get; set; }
+    [Parameter] public DateOnly To { get; set; }
+    [Parameter] public IReadOnlyList<MedicationPlanRules.Row> Rows { get; set; } = [];
+}

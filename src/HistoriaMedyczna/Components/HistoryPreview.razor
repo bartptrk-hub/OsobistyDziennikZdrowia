@@ -1,0 +1,36 @@
+<div class="modal-backdrop" @onkeydown="HandleKey"><section role="dialog" aria-modal="true" aria-labelledby="preview-title" class="modal panel history-preview" tabindex="-1">
+    <div class="entry-heading"><h2 id="preview-title">Szczegóły @Kind</h2><button type="button" class="text-button" @onclick="() => OnClose.InvokeAsync()">Zamknij ×</button></div>
+    @if (Selected is Visit v)
+    {
+        <span class="badge">Wizyta · @Date(v.Date)</span><h3>@v.Doctor</h3><dl><dt>Placówka</dt><dd>@Text(v.Clinic)</dd><dt>Rozpoznanie</dt><dd>@Text(v.Diagnosis)</dd><dt>Zalecenia</dt><dd class="preserve">@Text(v.Recommendations)</dd></dl>
+        @if (Medications.Any(m => m.VisitId == v.Id)) { <h4>Przepisane leki</h4>@foreach (var med in Medications.Where(m => m.VisitId == v.Id)) { <p>@med.Name · @med.Dose @med.Unit</p> } }
+    }
+    else if (Selected is Symptom s)
+    {
+        <span class="badge">@HistoryRules.Status(s, Symptoms)</span><h3>@s.Name</h3><dl><dt>Obszar</dt><dd>@Text(s.Area)</dd><dt>Okres</dt><dd>@Period(s.StartDate, s.EndDate)</dd><dt>Obserwacje</dt><dd class="preserve">@Text(s.Description)</dd></dl>
+        @if (Symptoms.FirstOrDefault(o => o.Id == s.OriginId) is Symptom origin) { <div class="relation-note"><span class="transition-arrow">↳</span> Powstał z: <button type="button" class="text-button" @onclick="() => OnSelect.InvokeAsync(origin)">@origin.Name · @Date(origin.StartDate)</button></div> }
+        @foreach (var child in HistoryRules.Children(s, Symptoms)) { <div class="relation-note"><span class="transition-arrow">↳</span> Przeszło w: <button type="button" class="text-button" @onclick="() => OnSelect.InvokeAsync(child)">@child.Name · @Date(child.StartDate)</button></div> }
+    }
+    else if (Selected is Medication m)
+    {
+        <span class="badge">Lek</span><h3>@m.Name</h3><dl><dt>Dawkowanie</dt><dd>@m.Dose @m.Unit</dd><dt>Okres</dt><dd>@Period(m.StartDate, m.EndDate)</dd><dt>Pory podawania</dt><dd>@string.Join(", ", m.TimesOfDay)</dd></dl>
+        @if (Visits.FirstOrDefault(v => v.Id == m.VisitId) is Visit linked) { <p>Wizyta: <button type="button" class="text-button" @onclick="() => OnSelect.InvokeAsync(linked)">@Date(linked.Date) · @linked.Doctor</button></p> }
+    }
+    <div class="form-actions">@if (Selected is Symptom symptom) { <button type="button" class="secondary" @onclick="() => OnTransition.InvokeAsync(symptom)">↳ Przeszło w…</button> }<button type="button" class="primary" @onclick="() => OnEdit.InvokeAsync(Selected)">Edytuj wpis</button></div>
+</section></div>
+
+@code {
+    [Parameter, EditorRequired] public Entity Selected { get; set; } = default!;
+    [Parameter] public IReadOnlyList<Symptom> Symptoms { get; set; } = [];
+    [Parameter] public IReadOnlyList<Visit> Visits { get; set; } = [];
+    [Parameter] public IReadOnlyList<Medication> Medications { get; set; } = [];
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<Entity> OnSelect { get; set; }
+    [Parameter] public EventCallback<Entity> OnEdit { get; set; }
+    [Parameter] public EventCallback<Symptom> OnTransition { get; set; }
+    private string Kind => Selected switch { Visit => "wizyty", Symptom => "objawu", _ => "leku" };
+    private static string Date(DateOnly day) => day.ToString("dd.MM.yyyy");
+    private static string Period(DateOnly from, DateOnly? to) => $"{Date(from)} – {(to is null ? "trwa" : Date(to.Value))}";
+    private static string Text(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
+    private Task HandleKey(KeyboardEventArgs e) => e.Key == "Escape" ? OnClose.InvokeAsync() : Task.CompletedTask;
+}
